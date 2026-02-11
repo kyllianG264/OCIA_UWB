@@ -1,13 +1,11 @@
 #include <StellaUWB.h>
 
 uint8_t SRC_ADDR[] = {0x22, 0x22};   // Stella
-uint8_t DST_ADDR[] = {0x11, 0x11};   // Portenta
+uint8_t DST_ADDR[] = {0x11, 0x11};   // Anchor Master
 
 void setup() {
   Serial.begin(115200);
-  while (!Serial) delay(10);
-
-  Serial.println("STELLA RESPONDER");
+  delay(200); // sur pile: ne pas bloquer
 
   UWB.begin();
   while (UWB.state() != 0) delay(10);
@@ -15,13 +13,15 @@ void setup() {
   UWBMacAddress src(UWBMacAddress::Size::SHORT, SRC_ADDR);
   UWBMacAddress dst(UWBMacAddress::Size::SHORT, DST_ADDR);
 
-  UWBTracker tag(0x12345678, src, dst);
+  // Stella en mode RESPONDER / CONTROLEE
+  UWBTracker tag(0x12345678, src, dst,
+                 uwb::DeviceRole::RESPONDER,
+                 uwb::DeviceType::CONTROLEE);
+
   UWBSessionManager.addSession(tag);
 
   tag.init();
   tag.start();
-
-  Serial.println("Stella prete (pas d'affichage distance)");
 }
 
 void loop() {
