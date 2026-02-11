@@ -1,27 +1,33 @@
 #include <StellaUWB.h>
 
 uint8_t SRC_ADDR[] = {0x22, 0x22};   // Stella
-uint8_t DST_ADDR[] = {0x11, 0x11};   // Portenta
+uint8_t DST1_ADDR[] = {0x11, 0x11};  // Anchor1
+uint8_t DST2_ADDR[] = {0x33, 0x33};  // Anchor2
 
 void setup() {
   Serial.begin(115200);
   while (!Serial) delay(10);
 
-  Serial.println("STELLA RESPONDER");
+  Serial.println("STELLA RESPONDER (silencieuse)");
 
   UWB.begin();
   while (UWB.state() != 0) delay(10);
 
   UWBMacAddress src(UWBMacAddress::Size::SHORT, SRC_ADDR);
-  UWBMacAddress dst(UWBMacAddress::Size::SHORT, DST_ADDR);
+  UWBMacAddress dst1(UWBMacAddress::Size::SHORT, DST1_ADDR);
+  UWBMacAddress dst2(UWBMacAddress::Size::SHORT, DST2_ADDR);
 
-  UWBTracker tag(0x12345678, src, dst);
-  UWBSessionManager.addSession(tag);
+  // 2 sessions pour répondre aux 2 ancres
+  UWBTracker resp1(0x12345678, src, dst1);
+  UWBTracker resp2(0x12345679, src, dst2);
 
-  tag.init();
-  tag.start();
+  UWBSessionManager.addSession(resp1);
+  UWBSessionManager.addSession(resp2);
 
-  Serial.println("Stella prete (pas d'affichage distance)");
+  resp1.init(); resp2.init();
+  resp1.start(); resp2.start();
+
+  Serial.println("Stella prete (responder)");
 }
 
 void loop() {
