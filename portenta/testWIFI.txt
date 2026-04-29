@@ -1,0 +1,36 @@
+#include "PortentaWiFiUDP.h"
+
+#define ANCHOR_ID 1
+
+PortentaWiFiUDP net;
+
+void setup()
+{
+    Serial.begin(115200);
+    delay(2000);
+
+    net.beginBroadcast(
+        "HONOR Magic6 Lite 5G",
+        "kyllian264",
+        4210,
+        5000 + ANCHOR_ID
+    );
+}
+
+void loop()
+{
+    static uint32_t seq = 0;
+    char msg[64];
+
+    snprintf(
+        msg,
+        sizeof(msg),
+        "A%d=0 A=%d S=%lu",
+        ANCHOR_ID,
+        ANCHOR_ID,
+        (unsigned long)seq++
+    );
+
+    net.send(msg);
+    delay(1000);
+}
