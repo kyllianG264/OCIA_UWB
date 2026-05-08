@@ -1,9 +1,0 @@
-{
-  "active_anchor_count": 4,
-  "alpha_dist": 0.12,
-  "alpha_pos": 0.1,
-  "precision_tolerance_cm": 100.0,
-  "noise_std": 18.0,
-  "spike_prob": 0.025,
-  "spike_amplitude": 120.0
-}
