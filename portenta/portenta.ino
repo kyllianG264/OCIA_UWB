@@ -10,6 +10,7 @@
 
 static const uint32_t THIS_SESSION_ID = 0x1001;
 static const uint32_t PRINT_MS = 100;
+static const uint32_t UART_BAUD = 115200;
 
 uint8_t SRC_ADDR[] = {0x11, 0x11};
 uint8_t DST_ADDR[] = {0x22, 0x22};
@@ -20,6 +21,32 @@ volatile uint16_t lastDist = 0xFFFF;
 volatile uint16_t d1_cm = 0xFFFF;
 
 UWBRangingController *controller = nullptr;
+
+void sendTelemetry(uint32_t cb, uint8_t status, uint16_t lastDistance, uint16_t d1, uint32_t nowMs) {
+  Serial1.print("UWB");
+  Serial1.print(",session=0x");
+  Serial1.print(THIS_SESSION_ID, HEX);
+  Serial1.print(",src=0x");
+  Serial1.print(SRC_ADDR[0], HEX);
+  Serial1.print(SRC_ADDR[1], HEX);
+  Serial1.print(",dst=0x");
+  Serial1.print(DST_ADDR[0], HEX);
+  Serial1.print(DST_ADDR[1], HEX);
+  Serial1.print(",cb=");
+  Serial1.print(cb);
+  Serial1.print(",status=");
+  Serial1.print(status);
+  Serial1.print(",lastDist=");
+  Serial1.print(lastDistance);
+  Serial1.print(",d1=");
+  if (d1 == 0xFFFF) {
+    Serial1.print(-1);
+  } else {
+    Serial1.print(d1);
+  }
+  Serial1.print(",ms=");
+  Serial1.println(nowMs);
+}
 
 void rangingHandler(UWBRangingData &data) {
   if (data.measureType() != (uint8_t)uwb::MeasurementType::TWO_WAY) return;
@@ -39,8 +66,11 @@ void rangingHandler(UWBRangingData &data) {
 void setup() {
   Serial.begin(115200);
   while (!Serial) delay(10);
+  Serial1.begin(UART_BAUD);
 
   Serial.println("PORTENTA CONTINUOUS CONTROLLER");
+  Serial.print("UART1 telemetry baud=");
+  Serial.println(UART_BAUD);
 
   UWB.registerRangingCallback(rangingHandler);
 
@@ -84,6 +114,8 @@ void loop() {
     if (d1 == 0xFFFF) Serial.print("--");
     else Serial.print(d1);
     Serial.println(" cm");
+
+    sendTelemetry(c, s, ld, d1, now);
   }
 
   delay(1);
