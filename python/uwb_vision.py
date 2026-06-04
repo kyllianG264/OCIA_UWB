@@ -83,9 +83,15 @@ def parse_args(argv=None):
     parser.add_argument("--mode", choices=MENU, default=None)
     parser.add_argument("--ip", default="0.0.0.0")
     parser.add_argument("--port", type=int, default=4210)
-    parser.add_argument("--source", choices=("simulation", "udp"), default=None)
+    parser.add_argument("--source", choices=("simulation", "udp", "review"), default=None)
     parser.add_argument("--duration", type=float, default=None)
     parser.add_argument("--output", default=None)
+    parser.add_argument("--uwb-log", default=None)
+    parser.add_argument("--cv-log", default=None)
+    parser.add_argument("--cv-calibration", default=None)
+    parser.add_argument("--cv-video", default=None)
+    parser.add_argument("--cv-player", default=None)
+    parser.add_argument("--cv-expected-players", type=int, default=None)
     return parser.parse_args(argv)
 
 
@@ -107,8 +113,8 @@ def ask_float_or_none(prompt):
 
 def ask_source(default="simulation"):
     while True:
-        raw = ask_value("Source (simulation/udp)", default).lower()
-        if raw in {"simulation", "udp"}:
+        raw = ask_value("Source (simulation/udp/review)", default).lower()
+        if raw in {"simulation", "udp", "review"}:
             return raw
         print("Choix invalide.")
 
@@ -133,7 +139,8 @@ def choose_mode_pygame(default_source):
     import pygame
 
     pygame.init()
-    screen = pygame.display.set_mode((860, 560))
+    desktop_info = pygame.display.Info()
+    screen = pygame.display.set_mode((desktop_info.current_w, desktop_info.current_h), pygame.NOFRAME)
     pygame.display.set_caption("OCIA UWB - Lanceur")
     clock = pygame.time.Clock()
     title_font = pygame.font.SysFont("Arial", 34)
@@ -142,6 +149,7 @@ def choose_mode_pygame(default_source):
 
     selected = 0
     source = default_source or "simulation"
+    source_cycle = ("simulation", "udp", "review")
     modes = list(MENU)
 
     while True:
@@ -158,7 +166,12 @@ def choose_mode_pygame(default_source):
                 elif event.key == pygame.K_DOWN:
                     selected = (selected + 1) % len(modes)
                 elif event.key in (pygame.K_LEFT, pygame.K_RIGHT, pygame.K_TAB):
-                    source = "udp" if source == "simulation" else "simulation"
+                    try:
+                        source_index = source_cycle.index(source)
+                    except ValueError:
+                        source_index = 0
+                    step = -1 if event.key == pygame.K_LEFT else 1
+                    source = source_cycle[(source_index + step) % len(source_cycle)]
                 elif event.key in (pygame.K_RETURN, pygame.K_KP_ENTER):
                     pygame.quit()
                     return modes[selected], source
@@ -186,7 +199,7 @@ def choose_mode_pygame(default_source):
             screen.blit(label, (52, y))
             y += 58
 
-        footer = help_font.render("Gauche/Droite ou Tab : changer source | Echap : quitter", True, (160, 175, 195))
+        footer = help_font.render("Gauche/Droite/Tab : simulation, udp, review | Echap : quitter", True, (160, 175, 195))
         screen.blit(footer, (42, 510))
         pygame.display.flip()
         clock.tick(60)
@@ -198,6 +211,19 @@ def build_mode_argv(mode, args):
         mode_argv.extend(["--ip", args.ip, "--port", str(args.port)])
     if APP_SPECS[mode]["needs_source"]:
         mode_argv.extend(["--source", args.source or ask_source()])
+    if mode == "2d":
+        if args.uwb_log:
+            mode_argv.extend(["--uwb-log", args.uwb_log])
+        if args.cv_log:
+            mode_argv.extend(["--cv-log", args.cv_log])
+        if args.cv_calibration:
+            mode_argv.extend(["--cv-calibration", args.cv_calibration])
+        if args.cv_video:
+            mode_argv.extend(["--cv-video", args.cv_video])
+        if args.cv_player:
+            mode_argv.extend(["--cv-player", args.cv_player])
+        if args.cv_expected_players is not None:
+            mode_argv.extend(["--cv-expected-players", str(args.cv_expected_players)])
     if mode == "logger":
         duration = args.duration if args.duration is not None else ask_float_or_none("Duree en secondes")
         if duration is not None:
@@ -232,6 +258,7 @@ def load_module(module_name, path):
 
 def unload_mode_modules():
     for name in (
+        "cv_sources",
         "display",
         "main",
         "position_calcul",

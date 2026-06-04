@@ -1,6 +1,9 @@
 import math
 
-import pygame
+try:
+    import pygame
+except ImportError:
+    pygame = None
 
 
 COURT_LENGTH_CM = 2800.0
@@ -22,6 +25,11 @@ COURT_APRON = (64, 82, 68)
 COURT_LINES = (248, 245, 236)
 COURT_PAINT = (214, 121, 72)
 COURT_CENTER_LOGO = (160, 88, 54)
+
+
+def _require_pygame():
+    if pygame is None:
+        raise RuntimeError("pygame is required to draw the court")
 
 
 def court_bounds(center_x, center_y):
@@ -48,12 +56,14 @@ def _arc_points(center, radius, start_deg, end_deg, steps=48):
 
 
 def _polyline_2d(surface, world_to_screen, points, color, width=2):
+    _require_pygame()
     screen_points = [world_to_screen(x, y) for x, y in points]
     if len(screen_points) >= 2:
         pygame.draw.lines(surface, color, False, screen_points, width)
 
 
 def draw_court_2d(surface, world_to_screen, center_x, center_y):
+    _require_pygame()
     left, right, top, bottom = court_bounds(center_x, center_y)
     surface.fill((16, 20, 24))
     apron = [
@@ -117,6 +127,28 @@ def draw_court_2d(surface, world_to_screen, center_x, center_y):
             _polyline_2d(surface, world_to_screen, _arc_points((hoop_x, center_y), THREE_POINT_RADIUS_CM, 112, 248, 56), COURT_LINES, 3)
 
 
+def draw_calibrated_court_2d(surface, world_to_screen, bounds, split_y=None):
+    left, right, top, bottom = bounds
+    surface.fill((16, 20, 24))
+    apron = [
+        world_to_screen(left - 24, top - 24),
+        world_to_screen(right + 24, top - 24),
+        world_to_screen(right + 24, bottom + 24),
+        world_to_screen(left - 24, bottom + 24),
+    ]
+    pygame.draw.polygon(surface, COURT_APRON, apron)
+    court_poly = [
+        world_to_screen(left, top),
+        world_to_screen(right, top),
+        world_to_screen(right, bottom),
+        world_to_screen(left, bottom),
+    ]
+    pygame.draw.polygon(surface, COURT_WOOD, court_poly)
+    _polyline_2d(surface, world_to_screen, [(left, top), (right, top), (right, bottom), (left, bottom), (left, top)], COURT_LINES, 3)
+    if split_y is not None and top < split_y < bottom:
+        _polyline_2d(surface, world_to_screen, [(left, split_y), (right, split_y)], COURT_LINES, 2)
+
+
 def _projected(camera, focal, points):
     projected = []
     for x, y in points:
@@ -128,18 +160,21 @@ def _projected(camera, focal, points):
 
 
 def _draw_polyline_3d(surface, camera, focal, points, color, width=2):
+    _require_pygame()
     projected = _projected(camera, focal, points)
     if projected and len(projected) >= 2:
         pygame.draw.lines(surface, color, False, projected, width)
 
 
 def _draw_polygon_3d(surface, camera, focal, points, color):
+    _require_pygame()
     projected = _projected(camera, focal, points)
     if projected and len(projected) >= 3:
         pygame.draw.polygon(surface, color, projected)
 
 
 def draw_court_3d(surface, camera, focal, center_x, center_y):
+    _require_pygame()
     left, right, top, bottom = court_bounds(center_x, center_y)
     _draw_polygon_3d(surface, camera, focal, [(left - 180, top - 180), (right + 180, top - 180), (right + 180, bottom + 180), (left - 180, bottom + 180)], COURT_APRON)
     stripe_count = 12
