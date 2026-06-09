@@ -114,6 +114,8 @@ def load_calibration(path: str) -> dict[str, Any]:
         "H_d": h_d,
         "bounds_g": bounds_g,
         "bounds_d": bounds_d,
+        "distortion_g": data.get("cam_gauche", {}).get("distortion"),
+        "distortion_d": data.get("cam_droite", {}).get("distortion"),
     }
 
 

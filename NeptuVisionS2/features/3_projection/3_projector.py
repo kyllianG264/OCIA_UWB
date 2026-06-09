@@ -27,6 +27,27 @@ def project(h_matrix: np.ndarray, px: float, py: float) -> tuple[int, int]:
     return int(projected[0][0][0]), int(projected[0][0][1])
 
 
+def undistort_point(px: float, py: float, distortion: dict | None) -> tuple[float, float]:
+    if not distortion or not distortion.get("enabled"):
+        return float(px), float(py)
+    width = float(distortion.get("width", 1.0) or 1.0)
+    height = float(distortion.get("height", 1.0) or 1.0)
+    cx = float(distortion.get("cx", width / 2.0))
+    cy = float(distortion.get("cy", height / 2.0))
+    scale = max(width, height, 1.0)
+    k1 = float(distortion.get("k1", 0.0))
+    k2 = float(distortion.get("k2", 0.0))
+    x = (float(px) - cx) / scale
+    y = (float(py) - cy) / scale
+    r2 = x * x + y * y
+    factor = 1.0 + k1 * r2 + k2 * r2 * r2
+    if abs(factor) < 1e-6:
+        factor = 1.0
+    xu = x / factor
+    yu = y / factor
+    return xu * scale + cx, yu * scale + cy
+
+
 def terrain_contains(bounds: dict, px: int, py: int) -> bool:
     return bounds["x_min"] <= px <= bounds["x_max"] and bounds["y_min"] <= py <= bounds["y_max"]
 
@@ -78,15 +99,18 @@ def main() -> None:
             if camera == "gauche":
                 h_matrix = calibration["H_g"]
                 bounds = calibration["bounds_g"]
+                distortion = calibration.get("distortion_g")
             elif camera == "droite":
                 h_matrix = calibration["H_d"]
                 bounds = calibration["bounds_d"]
+                distortion = calibration.get("distortion_d")
             else:
                 continue
 
             foot_x = float(row["foot_x"])
             foot_y = float(row["foot_y"])
-            projected_x, projected_y = project(h_matrix, foot_x, foot_y)
+            undistorted_x, undistorted_y = undistort_point(foot_x, foot_y, distortion)
+            projected_x, projected_y = project(h_matrix, undistorted_x, undistorted_y)
             inside_bounds = terrain_contains(bounds, projected_x, projected_y)
 
             if not inside_bounds:
