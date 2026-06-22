@@ -207,7 +207,21 @@ def _load_court_image_surface(image_path):
         return None
     if COURT_IMAGE_CACHE["path"] == image_path and COURT_IMAGE_CACHE["surface"] is not None:
         return COURT_IMAGE_CACHE["surface"]
-    surface = pygame.image.load(image_path).convert()
+    try:
+        surface = pygame.image.load(image_path).convert()
+    except (pygame.error, OSError):
+        try:
+            import cv2
+            import numpy as np
+
+            image_bgr = cv2.imread(image_path, cv2.IMREAD_COLOR)
+            if image_bgr is None:
+                return None
+            image_rgb = cv2.cvtColor(image_bgr, cv2.COLOR_BGR2RGB)
+            height, width = image_rgb.shape[:2]
+            surface = pygame.image.frombuffer(np.ascontiguousarray(image_rgb).tobytes(), (width, height), "RGB").convert()
+        except Exception:
+            return None
     COURT_IMAGE_CACHE["path"] = image_path
     COURT_IMAGE_CACHE["surface"] = surface
     return surface

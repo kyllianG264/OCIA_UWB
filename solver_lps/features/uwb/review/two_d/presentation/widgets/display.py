@@ -3,8 +3,7 @@
 import os
 
 from solver_lps.features.players.domain.player_analytics import average_speed_kmh, build_smoothed_heatmap, ensure_player_analytics_defaults, heat_color, max_speed_kmh, total_distance_m
-from solver_lps.features.ground.domain.court_geometry import draw_calibrated_court_2d, draw_court_2d
-from solver_lps.features.ground.domain.projection import fit_bounds_to_rect, project_world_point
+from solver_lps.features.ground.domain.projection import fit_bounds_to_rect
 from ...domain.scene import CAMERA_X, CAMERA_Y, HEIGHT, SCALE, WIDTH, anchor_colors
 
 
@@ -12,6 +11,7 @@ ANCHOR_CEILING_HEIGHT_CM = 600
 HEATMAP_SURFACE_CACHE = {"version": None, "size": None, "surface": None}
 CURRENT_LAYOUT = None
 COURT_IMAGE_CACHE = {"path": None, "surface": None}
+COORD_TRANSFORM = "swap_xy_flip_y"
 
 SIDE_PANEL_W = 360
 PADDING = 18
@@ -80,22 +80,34 @@ def _view_bounds(state):
 
 def _court_mapping(state):
     layout = state.get("_layout_cache")
-    left, right, top, bottom = _view_bounds(state)
     court_rect = layout["court_rect"]
     inner = pygame.Rect(court_rect.x + 4, court_rect.y + 4, court_rect.width - 8, court_rect.height - 8)
-    projection = fit_bounds_to_rect((left, right, top, bottom), inner)
+    view = state.get("view") or {}
+    terrain_path = view.get("terrain_image_path")
+    terrain_surface = _load_court_image_surface(terrain_path)
+    if terrain_surface is not None:
+        terrain_rect = _fit_rect(terrain_surface.get_size(), inner)
+    else:
+        terrain_rect = inner
+    left, right, top, bottom = _view_bounds(state)
+    projection = fit_bounds_to_rect((left, right, top, bottom), terrain_rect)
     return {
         "bounds": (left, right, top, bottom),
         "scale": projection.scale,
         "offset_x": projection.offset_x,
         "offset_y": projection.offset_y,
         "projection": projection,
+        "terrain_rect": terrain_rect,
+        "terrain_surface": terrain_surface,
+        "positions_rect": terrain_rect,
+        "heatmap_rect": terrain_rect,
+        "anchors_rect": terrain_rect,
     }
 
 
 def world_to_screen(state, x_cm, y_cm):
-    projection = _court_mapping(state)["projection"]
-    return project_world_point(projection, x_cm, y_cm)
+    screen_xy, _, _, _ = _point_to_screen(state, x_cm, y_cm)
+    return screen_xy
 
 
 def draw_text(screen, text, x, y, font, color=(255, 255, 255)):
@@ -203,39 +215,115 @@ def _fit_rect(source_size, target_rect):
 
 
 def _load_court_image_surface(image_path):
-    if not image_path or not os.path.exists(image_path):
+    if not image_path:
+        return None
+    if not os.path.exists(image_path):
         return None
     if COURT_IMAGE_CACHE["path"] == image_path and COURT_IMAGE_CACHE["surface"] is not None:
         return COURT_IMAGE_CACHE["surface"]
-    surface = pygame.image.load(image_path).convert()
+    try:
+        surface = pygame.image.load(image_path).convert()
+    except (pygame.error, OSError):
+        try:
+            import cv2
+            import numpy as np
+
+            image_bgr = cv2.imread(image_path, cv2.IMREAD_COLOR)
+            if image_bgr is None:
+                raise ValueError("cv2.imread returned None")
+            image_rgb = cv2.cvtColor(image_bgr, cv2.COLOR_BGR2RGB)
+            height, width = image_rgb.shape[:2]
+            surface = pygame.image.frombuffer(np.ascontiguousarray(image_rgb).tobytes(), (width, height), "RGB").convert()
+        except Exception:
+            COURT_IMAGE_CACHE["path"] = image_path
+            COURT_IMAGE_CACHE["surface"] = None
+            return None
     COURT_IMAGE_CACHE["path"] = image_path
     COURT_IMAGE_CACHE["surface"] = surface
     return surface
+
+
+def _terrain_debug_text(state, mapping):
+    view = state.get("view") or {}
+    terrain_path = view.get("terrain_image_path")
+    bg_label = "terrain-de-basket.jpg introuvable" if terrain_path and mapping.get("terrain_surface") is None else os.path.basename(terrain_path or "")
+    rect = mapping.get("terrain_rect") or pygame.Rect(0, 0, 0, 0)
+    rect_text = f"terrain_rect=({rect.x},{rect.y},{rect.width},{rect.height})"
+    transform = view.get("coord_transform", "identity")
+    return bg_label, rect_text, transform
+
+
+def _normalized_point(bounds, x_cm, y_cm):
+    left, right, top, bottom = bounds
+    width = max(float(right) - float(left), 1.0)
+    height = max(float(bottom) - float(top), 1.0)
+    u = (float(x_cm) - float(left)) / width
+    v = (float(y_cm) - float(top)) / height
+    return u, v
+
+
+def _apply_normalized_transform(u, v, transform):
+    if transform == "flip_x":
+        return 1.0 - u, v
+    if transform == "flip_y":
+        return u, 1.0 - v
+    if transform == "flip_x_flip_y":
+        return 1.0 - u, 1.0 - v
+    if transform == "swap_xy":
+        return v, u
+    if transform == "swap_xy_flip_x":
+        return 1.0 - v, u
+    if transform == "swap_xy_flip_y":
+        return v, 1.0 - u
+    if transform == "swap_xy_flip_x_flip_y":
+        return 1.0 - v, 1.0 - u
+    return u, v
+
+
+def _screen_from_normalized(rect, u, v):
+    draw_w = max(rect.width - 1, 0)
+    draw_h = max(rect.height - 1, 0)
+    px = rect.x + int(round(u * draw_w))
+    py = rect.y + int(round(v * draw_h))
+    return px, py
+
+
+def _point_to_screen(state, x_cm, y_cm, transform=None):
+    mapping = _court_mapping(state)
+    rect = mapping["terrain_rect"]
+    bounds = mapping["bounds"]
+    transform = transform or state.get("view", {}).get("coord_transform", COORD_TRANSFORM)
+    norm_before = _normalized_point(bounds, x_cm, y_cm)
+    norm_after = _apply_normalized_transform(norm_before[0], norm_before[1], transform)
+    screen_xy = _screen_from_normalized(rect, norm_after[0], norm_after[1])
+    out_of_rect = not rect.collidepoint(screen_xy)
+    return screen_xy, norm_before, norm_after, out_of_rect
 
 
 def draw_grid(screen, state):
     screen.fill((16, 20, 24))
     mapping = _court_mapping(state)
     view = state.get("view") or {}
-    court_rect = state["_layout_cache"]["court_rect"]
-    inner = pygame.Rect(court_rect.x + 4, court_rect.y + 4, court_rect.width - 8, court_rect.height - 8)
-    court_surface = pygame.Surface(inner.size)
-
-    def pane_world_to_screen(x_cm, y_cm):
-        left, _, top, _ = mapping["bounds"]
-        sx = int((x_cm - left) * mapping["scale"])
-        sy = int((y_cm - top) * mapping["scale"])
-        return sx, sy
+    terrain_rect = mapping["terrain_rect"]
 
     terrain_surface = _load_court_image_surface(view.get("terrain_image_path"))
-    if terrain_surface is not None and view.get("mode") == "calibrated" and view.get("bounds") is not None:
-        scaled = pygame.transform.smoothscale(terrain_surface, inner.size)
-        court_surface.blit(scaled, (0, 0))
-    elif view.get("mode") == "calibrated" and view.get("bounds") is not None:
-        draw_calibrated_court_2d(court_surface, pane_world_to_screen, view["bounds"], split_y=view.get("split_y"))
+    if view.get("terrain_image_path") and terrain_surface is None:
+        warning = pygame.Surface(terrain_rect.size, pygame.SRCALPHA)
+        warning.fill((60, 18, 18))
+        screen.blit(warning, terrain_rect.topleft)
+        err_font = pygame.font.SysFont(None, max(24, terrain_rect.height // 18))
+        label = err_font.render("terrain-de-basket.jpg introuvable", True, (255, 170, 170))
+        screen.blit(label, (terrain_rect.x + 20, terrain_rect.y + 20))
+    elif terrain_surface is not None:
+        scaled = pygame.transform.smoothscale(terrain_surface, terrain_rect.size)
+        screen.blit(scaled, terrain_rect.topleft)
     else:
-        draw_court_2d(court_surface, pane_world_to_screen, CAMERA_X, CAMERA_Y)
-    screen.blit(court_surface, inner.topleft)
+        warning = pygame.Surface(terrain_rect.size, pygame.SRCALPHA)
+        warning.fill((60, 18, 18))
+        screen.blit(warning, terrain_rect.topleft)
+        err_font = pygame.font.SysFont(None, max(24, terrain_rect.height // 18))
+        label = err_font.render("terrain-de-basket.jpg introuvable", True, (255, 170, 170))
+        screen.blit(label, (terrain_rect.x + 20, terrain_rect.y + 20))
 
 
 def draw_heatmap(screen, analytics):
@@ -243,21 +331,35 @@ def draw_heatmap(screen, analytics):
     if analytics.get("heatmap_snapshot_version") is None:
         return
     state = analytics["render_state"]
-    left, right, top, bottom = analytics["bounds"]
-    sx0, sy0 = world_to_screen(state, left, top)
-    sx1, sy1 = world_to_screen(state, right, bottom)
-    rect = pygame.Rect(min(sx0, sx1), min(sy0, sy1), abs(sx1 - sx0), abs(sy1 - sy0))
+    rect = state.get("_layout_cache", {}).get("terrain_rect")
+    if rect is None:
+        return
     if rect.width <= 0 or rect.height <= 0:
         return
-    cache_key = (analytics["heatmap_snapshot_version"], rect.size)
+    transform = state.get("view", {}).get("coord_transform", COORD_TRANSFORM)
+    cache_key = (analytics["heatmap_snapshot_version"], rect.size, transform)
     if HEATMAP_SURFACE_CACHE["version"] != cache_key:
         grid = build_smoothed_heatmap(analytics, radius=3)
         max_value = max((max(row) for row in grid), default=0.0)
-        heat_surface = pygame.Surface((analytics["heat_cols"], analytics["heat_rows"]), pygame.SRCALPHA)
+        heat_surface = pygame.Surface(rect.size, pygame.SRCALPHA)
+        heat_surface.fill((0, 0, 0, 0))
+        cols = max(1, int(analytics["heat_cols"]))
+        rows = max(1, int(analytics["heat_rows"]))
+        cell_w = max(1, int(round(rect.width / cols)))
+        cell_h = max(1, int(round(rect.height / rows)))
         for row_index, row in enumerate(grid):
             for col_index, value in enumerate(row):
-                heat_surface.set_at((col_index, row_index), heat_color(value, max_value))
-        HEATMAP_SURFACE_CACHE["surface"] = pygame.transform.smoothscale(heat_surface, rect.size)
+                if value <= 0:
+                    continue
+                u = (col_index + 0.5) / cols
+                v = (row_index + 0.5) / rows
+                u2, v2 = _apply_normalized_transform(u, v, transform)
+                px = int(round(u2 * max(rect.width - 1, 0)))
+                py = int(round(v2 * max(rect.height - 1, 0)))
+                color = heat_color(value, max_value)
+                cell_rect = pygame.Rect(px - cell_w // 2, py - cell_h // 2, cell_w, cell_h)
+                pygame.draw.rect(heat_surface, color, cell_rect)
+        HEATMAP_SURFACE_CACHE["surface"] = heat_surface
         HEATMAP_SURFACE_CACHE["version"] = cache_key
     screen.blit(HEATMAP_SURFACE_CACHE["surface"], rect)
 
@@ -432,18 +534,20 @@ def draw_scene(screen, fonts, active_anchors, active_ids, state, solution, tag_r
     screen_w, screen_h = screen.get_size()
     overlay = pygame.Surface((screen_w, screen_h), pygame.SRCALPHA)
     mapping = _court_mapping(state)
+    terrain_rect = mapping["terrain_rect"]
+    transform = state.get("view", {}).get("coord_transform", COORD_TRANSFORM)
     for aid in active_ids:
         if aid not in solution["dist_raw"]:
             continue
         ax, ay = active_anchors[aid]
-        sx, sy = world_to_screen(state, ax, ay)
+        (sx, sy), _, _, _ = _point_to_screen(state, ax, ay, transform)
         radius = max(1, int(solution["dist_raw"][aid] * mapping["scale"]))
         c = anchor_colors[aid]
         pygame.draw.circle(overlay, (c[0], c[1], c[2], 40), (sx, sy), radius)
     screen.blit(overlay, (0, 0))
 
     for aid, (ax, ay) in active_anchors.items():
-        sx, sy = world_to_screen(state, ax, ay)
+        (sx, sy), _, _, _ = _point_to_screen(state, ax, ay, transform)
         c = anchor_colors[aid]
         halo = pygame.Surface((52, 52), pygame.SRCALPHA)
         pygame.draw.circle(halo, (c[0], c[1], c[2], 60), (26, 26), 24)
@@ -455,7 +559,7 @@ def draw_scene(screen, fonts, active_anchors, active_ids, state, solution, tag_r
         draw_text(screen, f"h={ANCHOR_CEILING_HEIGHT_CM/100:.1f} m", sx + 18, sy + 2, small_font, (235, 235, 235))
 
     if tag_real is not None:
-        tx, ty = world_to_screen(state, *tag_real)
+        (tx, ty), _, _, _ = _point_to_screen(state, *tag_real, transform)
         pygame.draw.circle(screen, (255, 0, 0), (tx, ty), 11)
         draw_text(screen, "Tag reel", tx + 16, ty - 10, small_font, (255, 0, 0))
 
@@ -463,26 +567,34 @@ def draw_scene(screen, fonts, active_anchors, active_ids, state, solution, tag_r
     for player in solution.get("cv_positions", []):
         if selected_player_id and player["player_id"] != selected_player_id:
             continue
-        px, py = world_to_screen(state, player["x"], player["y"])
+        before_x, before_y = player["x"], player["y"]
+        (px, py), norm_before, norm_after, out_of_rect = _point_to_screen(state, before_x, before_y, transform)
         color = (255, 230, 120) if player.get("selected") else (80, 220, 255)
         pygame.draw.circle(screen, color, (px, py), 9 if player.get("selected") else 7)
         draw_text(screen, player["player_id"], px + 12, py - 14, small_font, color)
+        if player["player_id"] == "T004":
+            raw_x = player.get("raw_x", before_x)
+            raw_y = player.get("raw_y", before_y)
+            draw_text(screen, f"T004 raw=({raw_x:.1f},{raw_y:.1f})", px + 12, py + 10, small_font, (255, 220, 120))
+            draw_text(screen, f"T004 norm_before=({norm_before[0]:.3f},{norm_before[1]:.3f})", px + 12, py + 34, small_font, (200, 210, 225))
+            draw_text(screen, f"T004 norm_after=({norm_after[0]:.3f},{norm_after[1]:.3f})", px + 12, py + 58, small_font, (180, 255, 180))
+            draw_text(screen, f"T004 screen=({px},{py}) OUT_OF_RECT={str(out_of_rect).lower()}", px + 12, py + 82, small_font, (255, 180, 120))
 
     for i, p in enumerate(solution["raw_intersections"]):
-        px, py = world_to_screen(state, *p)
+        (px, py), _, _, _ = _point_to_screen(state, *p, transform)
         pygame.draw.circle(screen, (255, 0, 255), (px, py), 7)
         draw_text(screen, f"Inter brute {i + 1}", px + 10, py - 10, small_font, (255, 120, 255))
     for i, p in enumerate(solution["smooth_intersections"]):
-        px, py = world_to_screen(state, *p)
+        (px, py), _, _, _ = _point_to_screen(state, *p, transform)
         pygame.draw.circle(screen, (255, 255, 255), (px, py), 7)
         draw_text(screen, f"Inter lissee {i + 1}", px + 10, py - 10, small_font, (255, 255, 255))
 
     if solution["tag_est_raw"] is not None:
-        ex, ey = world_to_screen(state, *solution["tag_est_raw"])
+        (ex, ey), _, _, _ = _point_to_screen(state, *solution["tag_est_raw"], transform)
         pygame.draw.circle(screen, (180, 180, 180), (ex, ey), 10)
         draw_text(screen, "Estimation brute", ex + 14, ey - 10, small_font, (180, 180, 180))
     if solution["tag_est_smooth"] is not None:
-        ex, ey = world_to_screen(state, *solution["tag_est_smooth"])
+        (ex, ey), _, _, _ = _point_to_screen(state, *solution["tag_est_smooth"], transform)
         pygame.draw.circle(screen, (255, 210, 0), (ex, ey), 12)
         draw_text(screen, "Estimation lissee", ex + 14, ey - 10, small_font, (255, 210, 0))
 
@@ -491,6 +603,14 @@ def draw_scene(screen, fonts, active_anchors, active_ids, state, solution, tag_r
     draw_text(screen, "2..6 changer | Tab joueur | H hide | R reset | ESC quitter", 30, 85, small_font, (220, 220, 220))
     source_color = (120, 255, 210) if solution["source"] == "realtime" else (220, 220, 220)
     draw_text(screen, f"Source : {solution['status']}", 30, 111, small_font, source_color)
+    bg_label, rect_text, debug_transform = _terrain_debug_text(state, mapping)
+    draw_text(screen, f"BG={bg_label}", 30, 137, small_font, (255, 220, 120))
+    draw_text(screen, rect_text, 30, 161, small_font, (200, 210, 225))
+    draw_text(screen, f"positions_rect=({terrain_rect.x},{terrain_rect.y},{terrain_rect.width},{terrain_rect.height})", 30, 185, small_font, (200, 210, 225))
+    draw_text(screen, f"heatmap_rect=({terrain_rect.x},{terrain_rect.y},{terrain_rect.width},{terrain_rect.height})", 30, 209, small_font, (200, 210, 225))
+    draw_text(screen, f"anchors_rect=({terrain_rect.x},{terrain_rect.y},{terrain_rect.width},{terrain_rect.height})", 30, 233, small_font, (200, 210, 225))
+    draw_text(screen, f"transform={debug_transform}", 30, 257, small_font, (200, 210, 225))
+    draw_text(screen, "draw_order=terrain>heatmap>positions>anchors", 30, 281, small_font, (200, 210, 225))
 
     draw_player_dropdown(screen, small_font, solution, state.get("ui", {}))
     draw_camera_panel(screen, small_font, solution)

@@ -48,6 +48,15 @@ def undistort_point(px: float, py: float, distortion: dict | None) -> tuple[floa
     return xu * scale + cx, yu * scale + cy
 
 
+def apply_undistort_view(px: float, py: float, view_transform: dict | None) -> tuple[float, float]:
+    if not view_transform:
+        return float(px), float(py)
+    scale = float(view_transform.get("scale", 1.0) or 1.0)
+    offset_x = float(view_transform.get("offset_x", 0.0))
+    offset_y = float(view_transform.get("offset_y", 0.0))
+    return float(px) * scale + offset_x, float(py) * scale + offset_y
+
+
 def terrain_contains(bounds: dict, px: int, py: int) -> bool:
     return bounds["x_min"] <= px <= bounds["x_max"] and bounds["y_min"] <= py <= bounds["y_max"]
 
@@ -100,17 +109,20 @@ def main() -> None:
                 h_matrix = calibration["H_g"]
                 bounds = calibration["bounds_g"]
                 distortion = calibration.get("distortion_g")
+                undistort_view = calibration.get("undistort_view_g")
             elif camera == "droite":
                 h_matrix = calibration["H_d"]
                 bounds = calibration["bounds_d"]
                 distortion = calibration.get("distortion_d")
+                undistort_view = calibration.get("undistort_view_d")
             else:
                 continue
 
             foot_x = float(row["foot_x"])
             foot_y = float(row["foot_y"])
             undistorted_x, undistorted_y = undistort_point(foot_x, foot_y, distortion)
-            projected_x, projected_y = project(h_matrix, undistorted_x, undistorted_y)
+            view_x, view_y = apply_undistort_view(undistorted_x, undistorted_y, undistort_view)
+            projected_x, projected_y = project(h_matrix, view_x, view_y)
             inside_bounds = terrain_contains(bounds, projected_x, projected_y)
 
             if not inside_bounds:

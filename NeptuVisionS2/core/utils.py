@@ -108,6 +108,9 @@ def load_calibration(path: str) -> dict[str, Any]:
             "y_max": bounds.get("CY_BOT", 9999),
         }
 
+    view_g = data.get("cam_gauche", {}).get("undistort_view") or data.get("undistort_view_g") or {"scale": 1.0, "offset_x": 0.0, "offset_y": 0.0}
+    view_d = data.get("cam_droite", {}).get("undistort_view") or data.get("undistort_view_d") or {"scale": 1.0, "offset_x": 0.0, "offset_y": 0.0}
+
     return {
         "raw": data,
         "H_g": h_g,
@@ -116,6 +119,8 @@ def load_calibration(path: str) -> dict[str, Any]:
         "bounds_d": bounds_d,
         "distortion_g": data.get("cam_gauche", {}).get("distortion"),
         "distortion_d": data.get("cam_droite", {}).get("distortion"),
+        "undistort_view_g": view_g,
+        "undistort_view_d": view_d,
     }
 
 

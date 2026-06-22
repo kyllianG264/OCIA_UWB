@@ -4,6 +4,7 @@ from solver_lps.features.players.domain.player_registry import (
     bind_selected_player_analytics,
     capture_selected_player_heatmap,
     select_player_profile,
+    set_registry_bounds,
     toggle_selected_player_card,
     update_registry_player,
 )
@@ -60,6 +61,7 @@ def run(args, pygame, screen, fonts, display_module):
     state = create_state(settings)
     bind_selected_player_analytics(state)
     state["view"] = source.view_config
+    set_registry_bounds(state["player_registry"], None if state["view"] is None else state["view"].get("bounds"))
     state["player_analytics"]["source_label"] = source.source_label
     state["ui"]["player_dropdown_open"] = False
     state["ui"]["expected_player_count"] = args.cv_expected_players
@@ -179,13 +181,16 @@ def run(args, pygame, screen, fonts, display_module):
             current_tag_real = tag_real
             solution = update_position_solution(active_anchors, distance_packet, state, dt, tag_real)
             last_solution = solution
+            set_registry_bounds(state["player_registry"], None if state.get("view") is None else state["view"].get("bounds"))
 
             for player in solution.get("cv_positions", []):
+                player_x = player.get("raw_x", player["x"])
+                player_y = player.get("raw_y", player["y"])
                 update_registry_player(
                     state["player_registry"],
                     player["player_id"],
                     t=state["t"],
-                    pos_xy=(player["x"], player["y"]),
+                    pos_xy=(player_x, player_y),
                     height_cm=None,
                     jump_extra_cm=None,
                     dt=dt,

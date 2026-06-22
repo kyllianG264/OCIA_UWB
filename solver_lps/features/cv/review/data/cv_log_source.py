@@ -11,22 +11,21 @@ except ImportError:
 
 from solver_lps.features.ground.domain.court_geometry import court_bounds
 from solver_lps.features.ground.domain.calibration import load_terrain_calibration
-from solver_lps.features.cv.review.domain.stable_id_tracker import (
-    build_stable_frames as build_hungarian_kalman_cv_frames,
+from solver_lps.features.cv.review.domain.tracking_lifecycle import BOOTSTRAP_IGNORE_SPAWN_GATE_FRAMES, SpawnGuard
+from solver_lps.features.cv.review.domain.tracking_pipeline import (
+    build_tracking_frames as build_hungarian_kalman_cv_tracks,
 )
 
 
 _APP_ROOT = os.path.abspath(
     os.path.join(os.path.dirname(__file__), "..", "..", "..", "..")
 )
-_CV_LOG_DIR = os.path.join(_APP_ROOT, "features", "cv", "review", "data", "cv_logs")
+_WORKSPACE_ROOT = os.path.dirname(_APP_ROOT)
+_INTERNAL_CV_LOG_DIR = os.path.join(_APP_ROOT, "features", "cv", "review", "data", "cv_logs")
+_EXTERNAL_CV_LOG_DIR = os.path.join(_WORKSPACE_ROOT, "python", "CV Logs")
 DEFAULT_COURT_CENTER_X = 1250.0
 DEFAULT_COURT_CENTER_Y = 900.0
 
-DEFAULT_CV_LOG_PATH = os.path.join(_CV_LOG_DIR, "positions_merged.csv")
-DEFAULT_CV_CALIBRATION_PATH = os.path.join(_CV_LOG_DIR, "calibration.json")
-DEFAULT_CV_VIDEO_PATH = os.path.join(_CV_LOG_DIR, "tracking_composite.mp4")
-DEFAULT_CV_METADATA_PATH = os.path.join(_CV_LOG_DIR, "run_metadata.json")
 CV_ALL_PLAYERS = "__all__"
 CV_REID_MAX_DISTANCE = 125.0
 CV_REID_DISTANCE_PER_FRAME = 18.0
@@ -65,6 +64,54 @@ CV_OFF_TERRAIN_MATCH_PENALTY = 28.0
 CV_ON_TERRAIN_MATCH_BONUS = 10.0
 
 
+def _first_existing_path(*candidates):
+    for candidate in candidates:
+        if candidate and os.path.exists(candidate):
+            return candidate
+    for candidate in candidates:
+        if candidate:
+            return candidate
+    return None
+
+
+def _resolve_default_cv_log_path(external_dir=_EXTERNAL_CV_LOG_DIR, internal_dir=_INTERNAL_CV_LOG_DIR):
+    return _first_existing_path(
+        os.path.join(external_dir, "positions_raw.csv"),
+        os.path.join(internal_dir, "positions_raw.csv"),
+        os.path.join(external_dir, "positions_merged.csv"),
+        os.path.join(internal_dir, "positions_merged.csv"),
+    )
+
+
+def _resolve_refreshable_cv_log_path(csv_path):
+    if not csv_path:
+        return csv_path
+    root, ext = os.path.splitext(csv_path)
+    if ext.lower() == ".csv":
+        raw_candidate = root.replace("positions_merged", "positions_raw") + ext
+        if os.path.exists(raw_candidate):
+            return raw_candidate
+        if csv_path.endswith("positions_merged.csv"):
+            sibling_raw = os.path.join(os.path.dirname(csv_path), "positions_raw.csv")
+            if os.path.exists(sibling_raw):
+                return sibling_raw
+    return csv_path
+
+DEFAULT_CV_LOG_PATH = _resolve_default_cv_log_path()
+DEFAULT_CV_CALIBRATION_PATH = _first_existing_path(
+    os.path.join(_EXTERNAL_CV_LOG_DIR, "calibration.json"),
+    os.path.join(_INTERNAL_CV_LOG_DIR, "calibration.json"),
+)
+DEFAULT_CV_VIDEO_PATH = _first_existing_path(
+    os.path.join(_EXTERNAL_CV_LOG_DIR, "tracking_composite.mp4"),
+    os.path.join(_INTERNAL_CV_LOG_DIR, "tracking_composite.mp4"),
+)
+DEFAULT_CV_METADATA_PATH = _first_existing_path(
+    os.path.join(_EXTERNAL_CV_LOG_DIR, "run_metadata.json"),
+    os.path.join(_INTERNAL_CV_LOG_DIR, "run_metadata.json"),
+)
+
+
 def distance_2d(a, b):
     return math.hypot(b[0] - a[0], b[1] - a[1])
 
@@ -90,6 +137,8 @@ def _resolve_cv_video_path(video_path=None):
     candidates = []
     if video_path:
         candidates.append(video_path)
+    if DEFAULT_CV_LOG_PATH:
+        candidates.append(os.path.join(os.path.dirname(DEFAULT_CV_LOG_PATH), "tracking_composite.mp4"))
     candidates.append(DEFAULT_CV_VIDEO_PATH)
 
     metadata_path = DEFAULT_CV_METADATA_PATH
@@ -108,6 +157,42 @@ def _resolve_cv_video_path(video_path=None):
         if candidate and os.path.exists(candidate):
             return candidate
     return None
+
+
+def _resolve_related_path(reference_path, explicit_path, filename, fallback_path):
+    candidates = []
+    if explicit_path:
+        candidates.append(explicit_path)
+    if reference_path:
+        candidates.append(os.path.join(os.path.dirname(reference_path), filename))
+    if fallback_path:
+        candidates.append(fallback_path)
+    return _first_existing_path(*candidates)
+
+
+def _resolve_terrain_image_path(image_path):
+    if not image_path:
+        return None
+    directory = os.path.dirname(image_path)
+    if directory:
+        named_candidate = os.path.join(directory, "terrain-de-basket.jpg")
+        if os.path.exists(named_candidate):
+            return named_candidate
+    root, ext = os.path.splitext(image_path)
+    if ext.lower() in {".jpg", ".jpeg"}:
+        if os.path.exists(image_path):
+            return image_path
+        png_candidate = root + ".png"
+        if os.path.exists(png_candidate):
+            return png_candidate
+        return None
+    jpg_candidate = root + ".jpg"
+    jpeg_candidate = root + ".jpeg"
+    if os.path.exists(jpg_candidate):
+        return jpg_candidate
+    if os.path.exists(jpeg_candidate):
+        return jpeg_candidate
+    return image_path if os.path.exists(image_path) else None
 
 
 def _smooth_point(old_point, new_point, alpha):
@@ -147,6 +232,66 @@ def _infer_frame_bounds(frames):
     if not xs or not ys:
         return None
     return min(xs), max(xs), min(ys), max(ys)
+
+
+def _collect_coordinate_stats(frames):
+    all_x = []
+    all_y = []
+    on_x = []
+    on_y = []
+    for frame in frames:
+        for player in frame["players"]:
+            x_value = float(player["x"])
+            y_value = float(player["y"])
+            all_x.append(x_value)
+            all_y.append(y_value)
+            if player.get("on_terrain", True):
+                on_x.append(x_value)
+                on_y.append(y_value)
+    if not all_x or not all_y:
+        return None
+    reference_x = on_x if on_x else all_x
+    reference_y = on_y if on_y else all_y
+    return {
+        "all_bounds": (min(all_x), max(all_x), min(all_y), max(all_y)),
+        "on_terrain_bounds": (min(reference_x), max(reference_x), min(reference_y), max(reference_y)),
+    }
+
+
+def _terrain_reference_bounds(calibration):
+    if not calibration:
+        return None
+    terrain_size = calibration.get("terrain_png_size")
+    if isinstance(terrain_size, (list, tuple)) and len(terrain_size) == 2:
+        try:
+            width = max(float(terrain_size[0]) - 1.0, 1.0)
+            height = max(float(terrain_size[1]) - 1.0, 1.0)
+            return 0.0, width, 0.0, height
+        except (TypeError, ValueError):
+            pass
+    return calibration.get("bounds")
+
+
+def _detect_coordinate_space(calibration, coordinate_stats):
+    if not calibration or not coordinate_stats:
+        return "solver_world"
+    terrain_bounds = _terrain_reference_bounds(calibration)
+    if terrain_bounds is None:
+        return "solver_world"
+    min_x, max_x, min_y, max_y = coordinate_stats["on_terrain_bounds"]
+    left, right, top, bottom = terrain_bounds
+    width = max(float(right) - float(left), 1.0)
+    height = max(float(bottom) - float(top), 1.0)
+    margin_x = width * 0.35
+    margin_y = height * 0.35
+    if (
+        min_x >= left - margin_x
+        and max_x <= right + margin_x
+        and min_y >= top - margin_y
+        and max_y <= bottom + margin_y
+    ):
+        return "terrain_pixels"
+    return "solver_world"
 
 
 def _crosses_split_line(prev_y, new_y, split_y):
@@ -336,7 +481,7 @@ def _visible_player_score(player):
     )
 
 
-def _stable_player_index(player):
+def _tracked_player_index(player):
     player_id = str(player.get("player_id", "") or "")
     if player_id.startswith("P") and player_id[1:].isdigit():
         return int(player_id[1:])
@@ -347,8 +492,8 @@ def _prefer_duplicate_player(a, b):
     if bool(a.get("selected")) != bool(b.get("selected")):
         return a if a.get("selected") else b
 
-    a_index = _stable_player_index(a)
-    b_index = _stable_player_index(b)
+    a_index = _tracked_player_index(a)
+    b_index = _tracked_player_index(b)
     if a_index != b_index:
         return a if a_index < b_index else b
 
@@ -570,14 +715,15 @@ def _should_suppress_new_track(detection, frame, active_tracks, dormant_tracks, 
     return False
 
 
-def _build_stable_cv_frames(frames, split_y=None):
+def _build_tracked_cv_frames(frames, split_y=None):
     resolved_split_y = split_y if split_y is not None else _infer_split_y(frames)
     spawn_bounds = _infer_frame_bounds(frames)
     clip_start_timestamp_s = frames[0]["timestamp_s"] if frames else None
-    stable_frames = []
+    tracked_frames = []
     active_tracks = {}
     dormant_tracks = {}
     next_track_id = 1
+    spawn_guard = SpawnGuard()
 
     for frame in frames:
         detections = _merge_same_person_candidates(frame["players"], resolved_split_y)
@@ -688,6 +834,14 @@ def _build_stable_cv_frames(frames, split_y=None):
                     track_id = reattach_target
                     matched_track_ids.add(track_id)
                 else:
+                    if not spawn_guard.should_allow_spawn(
+                        detection,
+                        frame["frame"],
+                        clip_start_timestamp_s or 0.0,
+                        spawn_bounds,
+                        bootstrap_ignore_spawn_gate_frames=BOOTSTRAP_IGNORE_SPAWN_GATE_FRAMES,
+                    ):
+                        continue
                     if _should_suppress_new_track(detection, frame, active_tracks, dormant_tracks, resolved_split_y):
                         continue
                     spawn_category = _spawn_category(detection, frame, spawn_bounds, clip_start_timestamp_s)
@@ -702,6 +856,7 @@ def _build_stable_cv_frames(frames, split_y=None):
                 matched_track_ids.add(track_id)
 
             track = active_tracks[track_id]
+            spawn_guard.observe(track.last_raw_player_id, detection["frame"], detection.get("on_terrain", True))
             if not _track_is_visible(track):
                 continue
             frame_players.append(_track_snapshot(track, frame, raw_detection=detection))
@@ -721,15 +876,15 @@ def _build_stable_cv_frames(frames, split_y=None):
 
         frame_players = _dedupe_visible_players(frame_players)
 
-        stable_frames.append(
+        tracked_frames.append(
             {
                 "frame": frame["frame"],
                 "timestamp_s": frame["timestamp_s"],
-                "sequence_index": frame.get("sequence_index", len(stable_frames)),
+                "sequence_index": frame.get("sequence_index", len(tracked_frames)),
                 "players": sorted(frame_players, key=lambda item: item["player_id"]),
             }
         )
-    return stable_frames
+    return tracked_frames
 
 
 def _filter_short_lived_tracks(frames, min_observations=CV_MIN_TRACK_OBSERVATIONS):
@@ -762,7 +917,7 @@ def _filter_short_lived_tracks(frames, min_observations=CV_MIN_TRACK_OBSERVATION
 
 def _load_cv_frames(csv_path, split_y=None, calibration_path=None, expected_player_count=None):
     try:
-        stable_frames, _stats = build_hungarian_kalman_cv_frames(
+        tracked_frames, _stats = build_hungarian_kalman_cv_tracks(
             csv_path,
             calibration=calibration_path or DEFAULT_CV_CALIBRATION_PATH,
             merge_distance=CV_HUNGARIAN_MERGE_DISTANCE,
@@ -774,38 +929,9 @@ def _load_cv_frames(csv_path, split_y=None, calibration_path=None, expected_play
             min_hits=CV_HUNGARIAN_MIN_HITS,
             expected_players=_normalize_expected_player_count(expected_player_count) or 10,
         )
-        if stable_frames:
-            return _filter_short_lived_tracks(stable_frames, min_observations=CV_HUNGARIAN_MIN_HITS)
-    except Exception:
-        pass
-
-    frames = []
-    by_frame = {}
-    with open(csv_path, "r", encoding="utf-8-sig", newline="") as fh:
-        reader = csv.DictReader(fh)
-        for row in reader:
-            frame_id = int(float(row["frame"]))
-            player_id = _normalize_player_id(row["player_id"])
-            item = {
-                "frame": frame_id,
-                "timestamp_s": float(row.get("timestamp_s") or 0.0),
-                "player_id": player_id,
-                "raw_player_id": player_id,
-                "source_player_ids": [player_id],
-                "x": float(row["X"]),
-                "y": float(row["Y"]),
-                "half": row.get("demi_terrain") or row.get("cam") or "",
-                "on_terrain": str(row.get("on_terrain", "1")).strip() not in ("0", "false", "False", ""),
-            }
-            by_frame.setdefault(frame_id, []).append(item)
-    for frame_id in sorted(by_frame.keys()):
-        players = sorted(by_frame[frame_id], key=lambda item: item["player_id"])
-        timestamp_s = players[0]["timestamp_s"] if players else 0.0
-        frames.append({"frame": frame_id, "timestamp_s": timestamp_s, "players": players})
-    for sequence_index, frame in enumerate(frames):
-        frame["sequence_index"] = sequence_index
-    stable_frames = _build_stable_cv_frames(frames, split_y=split_y)
-    return _filter_short_lived_tracks(stable_frames, min_observations=CV_MIN_TRACK_OBSERVATIONS)
+    except Exception as exc:
+        raise RuntimeError(f"Failed to build CV review frames from {csv_path}") from exc
+    return _filter_short_lived_tracks(tracked_frames, min_observations=CV_HUNGARIAN_MIN_HITS)
 
 
 def _load_cv_calibration(calibration_path):
@@ -814,15 +940,28 @@ def _load_cv_calibration(calibration_path):
 
 class CvLogSource:
     def __init__(self, csv_path, calibration_path=None, player_id=None, video_path=None, expected_player_count=None):
-        self.csv_path = csv_path
-        self.calibration = _load_cv_calibration(calibration_path)
-        self.video_path = _resolve_cv_video_path(video_path)
+        self.csv_path = _resolve_refreshable_cv_log_path(csv_path)
+        resolved_calibration_path = _resolve_related_path(
+            self.csv_path,
+            calibration_path,
+            "calibration.json",
+            DEFAULT_CV_CALIBRATION_PATH,
+        )
+        self.calibration = _load_cv_calibration(resolved_calibration_path)
+        self.video_path = _resolve_cv_video_path(
+            _resolve_related_path(
+                self.csv_path,
+                video_path,
+                "tracking_composite.mp4",
+                DEFAULT_CV_VIDEO_PATH,
+            )
+        )
         self.video_capture = None
         self.video_fps = None
         self.expected_player_count = _normalize_expected_player_count(expected_player_count)
         split_y = None if self.calibration is None else self.calibration.get("split_y")
         self.frames = _load_cv_frames(
-            csv_path,
+            self.csv_path,
             split_y=split_y,
             calibration_path=calibration_path,
             expected_player_count=self.expected_player_count,
@@ -838,6 +977,8 @@ class CvLogSource:
         self._last_smoothed_frame_index = None
         self._smoothed_scene_positions = {}
         self.court_bounds = court_bounds(DEFAULT_COURT_CENTER_X, DEFAULT_COURT_CENTER_Y)
+        self.coordinate_stats = _collect_coordinate_stats(self.frames)
+        self.coordinate_space = _detect_coordinate_space(self.calibration, self.coordinate_stats)
         self.playback_started_at = time.monotonic()
         self.playback_position_s = 0.0
         self.playback_paused = False
@@ -898,26 +1039,21 @@ class CvLogSource:
     def view_config(self):
         if not self.calibration:
             return None
-        left, right, top, bottom = self.calibration["bounds"]
-        width = max(right - left, 1.0)
-        height = max(bottom - top, 1.0)
-        usable_width = max(1400 - 180, 1)
-        usable_height = max(900 - 140, 1)
-        scale = min(usable_width / width, usable_height / height)
+        left, right, top, bottom = self.court_bounds
         return {
-            "mode": "calibrated",
+            "mode": "world",
             "center_x": (left + right) / 2.0,
             "center_y": (top + bottom) / 2.0,
-            "scale": max(0.1, scale),
             "bounds": (left, right, top, bottom),
-            "split_y": self.calibration.get("split_y"),
-            "terrain_image_path": self.calibration.get("terrain_image_path"),
+            "split_y": None,
+            "terrain_image_path": _resolve_terrain_image_path(self.calibration.get("terrain_image_path")),
+            "coord_transform": "swap_xy_flip_y" if getattr(self, "coordinate_space", None) == "terrain_pixels" else "identity",
         }
 
     @property
     def analytics_bounds(self):
         if self.calibration:
-            return self.calibration["bounds"]
+            return self.court_bounds
         if not self.frames:
             return None
         xs = [player["x"] for frame in self.frames for player in frame["players"]]
@@ -994,9 +1130,24 @@ class CvLogSource:
         return self.playback_position_s
 
     def _map_position_to_scene(self, x_cv, y_cv):
-        if not self.calibration:
+        if not self.calibration or self.coordinate_space != "terrain_pixels":
             return x_cv, y_cv
-        return x_cv, y_cv
+        calib_left, calib_right, calib_top, calib_bottom = _terrain_reference_bounds(self.calibration)
+        calib_width = max(calib_right - calib_left, 1.0)
+        calib_height = max(calib_bottom - calib_top, 1.0)
+        court_left, court_right, court_top, court_bottom = self.court_bounds
+        court_length = max(court_right - court_left, 1.0)
+        court_width = max(court_bottom - court_top, 1.0)
+
+        # The calibration image is a portrait top-down court:
+        # image Y follows court length, image X follows court width.
+        # We expose the explicit transform as swap_xy_flip_y to keep the orientation consistent
+        # with the review canvas and make the mapping visible in the UI.
+        normalized_width = min(1.0, max(0.0, (float(x_cv) - calib_left) / calib_width))
+        normalized_length = min(1.0, max(0.0, (float(y_cv) - calib_top) / calib_height))
+        scene_x = court_left + normalized_length * court_length
+        scene_y = court_bottom - normalized_width * court_width
+        return scene_x, scene_y
 
     def _resolve_playback_index(self):
         if not self.frames:
@@ -1088,13 +1239,18 @@ class CvLogSource:
         for player in frame["players"]:
             if not player.get("on_terrain", True):
                 continue
-            scene_x, scene_y = self._map_position_to_scene(player["x"], player["y"])
+            raw_x = player.get("raw_x", player["x"])
+            raw_y = player.get("raw_y", player["y"])
+            scene_x, scene_y = self._map_position_to_scene(raw_x, raw_y)
             selected_player = selected is not None and player["player_id"] == selected["player_id"]
-            scene_x, scene_y = self._smooth_scene_position(
-                player["player_id"],
-                (scene_x, scene_y),
-                selected=selected_player,
-            )
+            if "raw_x" not in player and "raw_y" not in player:
+                scene_x, scene_y = self._smooth_scene_position(
+                    player["player_id"],
+                    (scene_x, scene_y),
+                    selected=selected_player,
+                )
+            else:
+                self._smoothed_scene_positions[player["player_id"]] = (scene_x, scene_y)
             positions.append(
                 {
                     "player_id": player["player_id"],
@@ -1102,6 +1258,8 @@ class CvLogSource:
                     "source_player_ids": list(player.get("source_player_ids", [])),
                     "x": scene_x,
                     "y": scene_y,
+                    "raw_x": raw_x,
+                    "raw_y": raw_y,
                     "half": player["half"],
                     "on_terrain": True,
                     "confidence": player.get("confidence", 1.0),
@@ -1128,7 +1286,10 @@ class CvLogSource:
             if selected_in_output is not None:
                 primary_position = (selected_in_output["x"], selected_in_output["y"])
             else:
-                primary_position = self._map_position_to_scene(selected["x"], selected["y"])
+                primary_position = self._map_position_to_scene(
+                    selected.get("raw_x", selected["x"]),
+                    selected.get("raw_y", selected["y"]),
+                )
         return {
             "raw": {},
             "valid": selected is not None or self.player_id == CV_ALL_PLAYERS,

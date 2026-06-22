@@ -40,6 +40,7 @@ LEFT_COLOR = (59, 130, 246)
 RIGHT_COLOR = (239, 68, 68)
 TEXT_BG = (0, 0, 0)
 TEXT_FG = (255, 230, 0)
+UNDISTORT_VIEW_MARGIN_PX = 12.0
 
 terrain_path = str(DEFAULT_TERRAIN_IMAGE)
 if not os.path.isfile(terrain_path):
@@ -79,23 +80,107 @@ def apply_radial_correction_to_points(points, distortion):
     return corrected
 
 
-def remap_frame_with_distortion(frame_rgb: np.ndarray, distortion: Optional[dict]) -> np.ndarray:
+def invert_radial_correction_to_points(points, distortion, iterations: int = 8):
+    if not distortion or not distortion.get("enabled"):
+        return [list(point) for point in points]
+    width = float(distortion["width"])
+    height = float(distortion["height"])
+    cx = float(distortion["cx"])
+    cy = float(distortion["cy"])
+    scale = max(width, height, 1.0)
+    k1 = float(distortion.get("k1", 0.0))
+    k2 = float(distortion.get("k2", 0.0))
+    inverted = []
+    for point in points:
+        xu = (float(point[0]) - cx) / scale
+        yu = (float(point[1]) - cy) / scale
+        x = xu
+        y = yu
+        for _ in range(iterations):
+            r2 = x * x + y * y
+            factor = 1.0 + k1 * r2 + k2 * r2 * r2
+            if abs(factor) < 1e-6:
+                factor = 1.0
+            x = xu * factor
+            y = yu * factor
+        inverted.append([x * scale + cx, y * scale + cy])
+    return inverted
+
+
+def apply_view_transform_to_points(points, view_transform):
+    if not view_transform:
+        return [list(point) for point in points]
+    scale = float(view_transform.get("scale", 1.0))
+    offset_x = float(view_transform.get("offset_x", 0.0))
+    offset_y = float(view_transform.get("offset_y", 0.0))
+    return [[float(point[0]) * scale + offset_x, float(point[1]) * scale + offset_y] for point in points]
+
+
+def invert_view_transform_to_points(points, view_transform):
+    if not view_transform:
+        return [list(point) for point in points]
+    scale = float(view_transform.get("scale", 1.0) or 1.0)
+    offset_x = float(view_transform.get("offset_x", 0.0))
+    offset_y = float(view_transform.get("offset_y", 0.0))
+    return [[(float(point[0]) - offset_x) / scale, (float(point[1]) - offset_y) / scale] for point in points]
+
+
+def compute_undistort_view_transform(width: int, height: int, distortion: Optional[dict], margin_px: float = UNDISTORT_VIEW_MARGIN_PX):
+    identity = {
+        "scale": 1.0,
+        "offset_x": 0.0,
+        "offset_y": 0.0,
+        "width": int(width),
+        "height": int(height),
+    }
+    if not distortion or not distortion.get("enabled"):
+        return identity
+
+    edge_steps = max(8, min(width, height) // 80)
+    border_points = []
+    for x_value in np.linspace(0.0, max(width - 1, 0), edge_steps + 1):
+        border_points.append([x_value, 0.0])
+        border_points.append([x_value, float(max(height - 1, 0))])
+    for y_value in np.linspace(0.0, max(height - 1, 0), edge_steps + 1):
+        border_points.append([0.0, y_value])
+        border_points.append([float(max(width - 1, 0)), y_value])
+
+    corrected = apply_radial_correction_to_points(border_points, distortion)
+    x_values = [point[0] for point in corrected]
+    y_values = [point[1] for point in corrected]
+    min_x = min(x_values)
+    max_x = max(x_values)
+    min_y = min(y_values)
+    max_y = max(y_values)
+    span_x = max(max_x - min_x, 1.0)
+    span_y = max(max_y - min_y, 1.0)
+    usable_width = max(float(width) - 2.0 * margin_px, 1.0)
+    usable_height = max(float(height) - 2.0 * margin_px, 1.0)
+    scale = min(usable_width / span_x, usable_height / span_y)
+    offset_x = margin_px + (usable_width - span_x * scale) / 2.0 - min_x * scale
+    offset_y = margin_px + (usable_height - span_y * scale) / 2.0 - min_y * scale
+    return {
+        "scale": float(scale),
+        "offset_x": float(offset_x),
+        "offset_y": float(offset_y),
+        "width": int(width),
+        "height": int(height),
+    }
+
+
+def remap_frame_with_distortion(frame_rgb: np.ndarray, distortion: Optional[dict], view_transform: Optional[dict] = None) -> np.ndarray:
     if not distortion or not distortion.get("enabled"):
         return frame_rgb
     height, width = frame_rgb.shape[:2]
-    cx = float(distortion["cx"])
-    cy = float(distortion["cy"])
-    scale = max(float(distortion["width"]), float(distortion["height"]), 1.0)
-    k1 = float(distortion.get("k1", 0.0))
-    k2 = float(distortion.get("k2", 0.0))
     grid_x, grid_y = np.meshgrid(np.arange(width, dtype=np.float32), np.arange(height, dtype=np.float32))
-    xu = (grid_x - cx) / scale
-    yu = (grid_y - cy) / scale
-    r2 = xu * xu + yu * yu
-    factor = 1.0 + k1 * r2 + k2 * r2 * r2
-    map_x = (xu * factor * scale + cx).astype(np.float32)
-    map_y = (yu * factor * scale + cy).astype(np.float32)
-    return cv2.remap(frame_rgb, map_x, map_y, interpolation=cv2.INTER_LINEAR, borderMode=cv2.BORDER_REFLECT)
+    destination_points = np.stack([grid_x.reshape(-1), grid_y.reshape(-1)], axis=1)
+    corrected_points = invert_view_transform_to_points(destination_points.tolist(), view_transform)
+    corrected_points = np.asarray(corrected_points, dtype=np.float32)
+    source_points = invert_radial_correction_to_points(corrected_points, distortion)
+    source_points_array = np.asarray(source_points, dtype=np.float32).reshape(height, width, 2)
+    map_x = source_points_array[:, :, 0]
+    map_y = source_points_array[:, :, 1]
+    return cv2.remap(frame_rgb, map_x, map_y, interpolation=cv2.INTER_LINEAR, borderMode=cv2.BORDER_CONSTANT, borderValue=(0, 0, 0))
 
 
 def line_fit_error(points) -> float:
@@ -336,9 +421,14 @@ def save_calibration(
     right_point_errors: list[float],
 ) -> str:
     os.makedirs(output_dir, exist_ok=True)
+    left_bounds = bounds_from_points(left_terrain_points) if left_terrain_points else None
+    right_bounds = bounds_from_points(right_terrain_points) if right_terrain_points else None
+    left_view = st.session_state.get("undistort_view_g") or {"scale": 1.0, "offset_x": 0.0, "offset_y": 0.0}
+    right_view = st.session_state.get("undistort_view_d") or {"scale": 1.0, "offset_x": 0.0, "offset_y": 0.0}
     payload = {
         "terrain_image_path": terrain_path,
         "terrain_image_size": [terrain_w, terrain_h],
+        "terrain_png_size": [terrain_w, terrain_h],
         "cam_gauche": {
             "frame_points": left_video_points,
             "terrain_points": left_terrain_points,
@@ -349,6 +439,7 @@ def save_calibration(
             "rms_reprojection_error_px": left_rms_error,
             "point_errors_px": left_point_errors,
             "distortion": st.session_state.get("distortion_g"),
+            "undistort_view": left_view,
             "distortion_lines": st.session_state.get("distortion_lines_g", []),
         },
         "cam_droite": {
@@ -361,13 +452,21 @@ def save_calibration(
             "rms_reprojection_error_px": right_rms_error,
             "point_errors_px": right_point_errors,
             "distortion": st.session_state.get("distortion_d"),
+            "undistort_view": right_view,
             "distortion_lines": st.session_state.get("distortion_lines_d", []),
         },
         "terrain_bounds": {
-            "gauche": bounds_from_points(left_terrain_points) if left_terrain_points else None,
-            "droite": bounds_from_points(right_terrain_points) if right_terrain_points else None,
+            "gauche": left_bounds,
+            "droite": right_bounds,
         },
         "split_y": compute_split_y(left_terrain_points, right_terrain_points),
+        "split_axis": "y",
+        "H_g": left_homography.tolist(),
+        "H_d": right_homography.tolist(),
+        "bounds_g": left_bounds,
+        "bounds_d": right_bounds,
+        "undistort_view_g": left_view,
+        "undistort_view_d": right_view,
         "calibration_method": "findHomography(RANSAC)",
     }
     path = os.path.join(output_dir, "calibration.json")
@@ -396,6 +495,8 @@ def init_state() -> None:
         "distortion_current_line_d": [],
         "distortion_g": None,
         "distortion_d": None,
+        "undistort_view_g": None,
+        "undistort_view_d": None,
         "distortion_mode": False,
         "prev_click_distortion_g": None,
         "prev_click_distortion_d": None,
@@ -422,8 +523,8 @@ if not HAS_CLICK:
 
 with st.sidebar:
     st.header("Settings")
-    left_video_path = st.text_input("Left video", value=str(SAMPLE_VIDEOS_DIR / "gauche.mp4"), key="sid_vg")
-    right_video_path = st.text_input("Right video", value=str(SAMPLE_VIDEOS_DIR / "droite.mp4"), key="sid_vd")
+    left_video_path = st.text_input("Left video", value=str(SAMPLE_VIDEOS_DIR / "gauche-creps.mp4"), key="sid_vg")
+    right_video_path = st.text_input("Right video", value=str(SAMPLE_VIDEOS_DIR / "droite-creps.mp4"), key="sid_vd")
     extract_second = st.number_input("Extraction timestamp (s)", 0.0, value=5.0, step=1.0)
     output_dir = st.text_input("Output directory", os.path.join(str(ROOT_DIR), "NeptuVisionResults", "2_Calibration"))
 
@@ -441,6 +542,7 @@ with st.sidebar:
                 st.session_state[frame_key] = extract_frame(path, extract_second)
                 st.session_state[f"vid_pts_{side_key}"] = []
                 st.session_state[f"ter_pts_{side_key}"] = []
+                st.session_state[f"undistort_view_{side_key}"] = None
             except Exception as exc:
                 st.error(str(exc))
                 success = False
@@ -463,9 +565,19 @@ pending_camera = st.session_state["pending_camera"]
 pending_video_point = st.session_state["pending_video_point"]
 distortion_left = st.session_state["distortion_g"]
 distortion_right = st.session_state["distortion_d"]
+undistort_view_left = None
+undistort_view_right = None
+if left_frame is not None:
+    undistort_view_left = st.session_state["undistort_view_g"] or compute_undistort_view_transform(left_frame.shape[1], left_frame.shape[0], distortion_left)
+if left_frame is not None:
+    st.session_state["undistort_view_g"] = undistort_view_left
+if right_frame is not None:
+    undistort_view_right = st.session_state["undistort_view_d"] or compute_undistort_view_transform(right_frame.shape[1], right_frame.shape[0], distortion_right)
+if right_frame is not None:
+    st.session_state["undistort_view_d"] = undistort_view_right
 
-left_video_points_corrected = apply_radial_correction_to_points(left_video_points, distortion_left) if left_video_points else []
-right_video_points_corrected = apply_radial_correction_to_points(right_video_points, distortion_right) if right_video_points else []
+left_video_points_corrected = left_video_points
+right_video_points_corrected = right_video_points
 
 left_result = None
 right_result = None
@@ -540,7 +652,7 @@ else:
             st.session_state["distortion_current_line_g"],
             "L",
             LEFT_COLOR,
-            distortion_left,
+            None,
         )
         right_image = annotate_distortion_lines(
             right_frame,
@@ -548,11 +660,23 @@ else:
             st.session_state["distortion_current_line_d"],
             "R",
             RIGHT_COLOR,
-            distortion_right,
+            None,
         )
     else:
-        left_image = annotate_video(remap_frame_with_distortion(left_frame, distortion_left), left_video_points_corrected, "L", LEFT_COLOR, apply_radial_correction_to_points([pending_video_point], distortion_left)[0] if pending_camera == "g" and pending_video_point is not None else None)
-        right_image = annotate_video(remap_frame_with_distortion(right_frame, distortion_right), right_video_points_corrected, "R", RIGHT_COLOR, apply_radial_correction_to_points([pending_video_point], distortion_right)[0] if pending_camera == "d" and pending_video_point is not None else None)
+        left_image = annotate_video(
+            remap_frame_with_distortion(left_frame, distortion_left, undistort_view_left),
+            left_video_points,
+            "L",
+            LEFT_COLOR,
+            pending_video_point if pending_camera == "g" and pending_video_point is not None else None,
+        )
+        right_image = annotate_video(
+            remap_frame_with_distortion(right_frame, distortion_right, undistort_view_right),
+            right_video_points,
+            "R",
+            RIGHT_COLOR,
+            pending_video_point if pending_camera == "d" and pending_video_point is not None else None,
+        )
 
     st.markdown("**Left camera**")
     left_click = click_widget(left_image, 980, key="video_left")
@@ -580,14 +704,30 @@ else:
             st.session_state["pending_video_point"] = None
         st.rerun()
     if left_controls[2].button("Validate left line", disabled=len(st.session_state["distortion_current_line_g"]) < 3):
+        previous_distortion = distortion_left
+        previous_view = undistort_view_left
         st.session_state["distortion_lines_g"] = st.session_state["distortion_lines_g"] + [st.session_state["distortion_current_line_g"]]
         st.session_state["distortion_current_line_g"] = []
         st.session_state["distortion_g"] = optimize_distortion(st.session_state["distortion_lines_g"], left_frame.shape[1], left_frame.shape[0])
+        st.session_state["undistort_view_g"] = compute_undistort_view_transform(left_frame.shape[1], left_frame.shape[0], st.session_state["distortion_g"])
+        if st.session_state["vid_pts_g"]:
+            corrected_points = invert_view_transform_to_points(st.session_state["vid_pts_g"], previous_view)
+            raw_points = invert_radial_correction_to_points(corrected_points, previous_distortion)
+            corrected_points = apply_radial_correction_to_points(raw_points, st.session_state["distortion_g"])
+            st.session_state["vid_pts_g"] = apply_view_transform_to_points(corrected_points, st.session_state["undistort_view_g"])
+        st.session_state["pending_camera"] = None
+        st.session_state["pending_video_point"] = None
         st.rerun()
     if left_controls[3].button("Reset left lines"):
+        if distortion_left and distortion_left.get("enabled") and st.session_state["vid_pts_g"]:
+            corrected_points = invert_view_transform_to_points(st.session_state["vid_pts_g"], undistort_view_left)
+            st.session_state["vid_pts_g"] = invert_radial_correction_to_points(corrected_points, distortion_left)
         st.session_state["distortion_lines_g"] = []
         st.session_state["distortion_current_line_g"] = []
         st.session_state["distortion_g"] = None
+        st.session_state["undistort_view_g"] = None
+        st.session_state["pending_camera"] = None
+        st.session_state["pending_video_point"] = None
         st.rerun()
 
     st.markdown("**Right camera**")
@@ -616,14 +756,30 @@ else:
             st.session_state["pending_video_point"] = None
         st.rerun()
     if right_controls[2].button("Validate right line", disabled=len(st.session_state["distortion_current_line_d"]) < 3):
+        previous_distortion = distortion_right
+        previous_view = undistort_view_right
         st.session_state["distortion_lines_d"] = st.session_state["distortion_lines_d"] + [st.session_state["distortion_current_line_d"]]
         st.session_state["distortion_current_line_d"] = []
         st.session_state["distortion_d"] = optimize_distortion(st.session_state["distortion_lines_d"], right_frame.shape[1], right_frame.shape[0])
+        st.session_state["undistort_view_d"] = compute_undistort_view_transform(right_frame.shape[1], right_frame.shape[0], st.session_state["distortion_d"])
+        if st.session_state["vid_pts_d"]:
+            corrected_points = invert_view_transform_to_points(st.session_state["vid_pts_d"], previous_view)
+            raw_points = invert_radial_correction_to_points(corrected_points, previous_distortion)
+            corrected_points = apply_radial_correction_to_points(raw_points, st.session_state["distortion_d"])
+            st.session_state["vid_pts_d"] = apply_view_transform_to_points(corrected_points, st.session_state["undistort_view_d"])
+        st.session_state["pending_camera"] = None
+        st.session_state["pending_video_point"] = None
         st.rerun()
     if right_controls[3].button("Reset right lines"):
+        if distortion_right and distortion_right.get("enabled") and st.session_state["vid_pts_d"]:
+            corrected_points = invert_view_transform_to_points(st.session_state["vid_pts_d"], undistort_view_right)
+            st.session_state["vid_pts_d"] = invert_radial_correction_to_points(corrected_points, distortion_right)
         st.session_state["distortion_lines_d"] = []
         st.session_state["distortion_current_line_d"] = []
         st.session_state["distortion_d"] = None
+        st.session_state["undistort_view_d"] = None
+        st.session_state["pending_camera"] = None
+        st.session_state["pending_video_point"] = None
         st.rerun()
 
 
@@ -636,9 +792,9 @@ with preview_left:
         st.info("Add at least 4 left pairs to compute the left homography.")
     else:
         st.image(Image.fromarray(preview_projection(left_result[0], left_video_points_corrected, left_terrain_points, left_result[1], LEFT_COLOR, "L")), use_container_width=True)
-        st.image(Image.fromarray(draw_video_sampling_grid(remap_frame_with_distortion(left_frame, distortion_left), left_result[0])), use_container_width=True)
+        st.image(Image.fromarray(draw_video_sampling_grid(remap_frame_with_distortion(left_frame, distortion_left, undistort_view_left), left_result[0])), use_container_width=True)
         if distortion_left is not None:
-            st.image(Image.fromarray(remap_frame_with_distortion(left_frame, distortion_left)), use_container_width=True)
+            st.image(Image.fromarray(remap_frame_with_distortion(left_frame, distortion_left, undistort_view_left)), use_container_width=True)
         with st.expander("Left point errors"):
             for index, error_value in enumerate(left_result[3]):
                 state = "inlier" if left_result[1][index] else "outlier"
@@ -650,9 +806,9 @@ with preview_right:
         st.info("Add at least 4 right pairs to compute the right homography.")
     else:
         st.image(Image.fromarray(preview_projection(right_result[0], right_video_points_corrected, right_terrain_points, right_result[1], RIGHT_COLOR, "R")), use_container_width=True)
-        st.image(Image.fromarray(draw_video_sampling_grid(remap_frame_with_distortion(right_frame, distortion_right), right_result[0])), use_container_width=True)
+        st.image(Image.fromarray(draw_video_sampling_grid(remap_frame_with_distortion(right_frame, distortion_right, undistort_view_right), right_result[0])), use_container_width=True)
         if distortion_right is not None:
-            st.image(Image.fromarray(remap_frame_with_distortion(right_frame, distortion_right)), use_container_width=True)
+            st.image(Image.fromarray(remap_frame_with_distortion(right_frame, distortion_right, undistort_view_right)), use_container_width=True)
         with st.expander("Right point errors"):
             for index, error_value in enumerate(right_result[3]):
                 state = "inlier" if right_result[1][index] else "outlier"

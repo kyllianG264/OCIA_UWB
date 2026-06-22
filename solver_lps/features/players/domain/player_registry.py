@@ -89,6 +89,15 @@ def update_registry_player(
     return profile
 
 
+def set_registry_bounds(registry, bounds):
+    ensure_player_registry_defaults(registry)
+    if bounds is None:
+        return
+    bounds_tuple = tuple(float(value) for value in bounds)
+    for profile in registry["profiles"].values():
+        profile["bounds"] = bounds_tuple
+
+
 def capture_selected_player_heatmap(registry):
     capture_heatmap_snapshot(get_selected_player_profile(registry))
 
