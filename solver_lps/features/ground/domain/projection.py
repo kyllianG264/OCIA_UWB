@@ -38,3 +38,19 @@ def project_world_point(projection, x_cm, y_cm):
     sx = int(projection.offset_x + (float(x_cm) - projection.left) * projection.scale)
     sy = int(projection.offset_y + (float(y_cm) - projection.top) * projection.scale)
     return sx, sy
+
+
+def project_court_cm_to_terrain_pixels(x_cm, y_cm, court_world_bounds, terrain_pixel_bounds):
+    """Map physical court coordinates to the portrait terrain-image coordinate system."""
+    court_left, court_right, court_top, court_bottom = court_world_bounds
+    terrain_left, terrain_right, terrain_top, terrain_bottom = terrain_pixel_bounds
+    court_length = max(float(court_right) - float(court_left), 1.0)
+    court_width = max(float(court_bottom) - float(court_top), 1.0)
+    terrain_width = float(terrain_right) - float(terrain_left)
+    terrain_height = float(terrain_bottom) - float(terrain_top)
+    normalized_length = (float(x_cm) - float(court_left)) / court_length
+    normalized_width = (float(y_cm) - float(court_top)) / court_width
+    return (
+        float(terrain_left) + normalized_width * terrain_width,
+        float(terrain_top) + normalized_length * terrain_height,
+    )

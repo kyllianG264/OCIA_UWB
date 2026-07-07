@@ -1,11 +1,12 @@
 import argparse
 
-from solver_lps.features.udp_viewer.realtime.presentation.widgets.viewer_widget import (
+from solver_lps.features.uwb.acquisition.presentation.realtime.viewer_cli import (
     main as realtime_main,
 )
-from solver_lps.features.udp_viewer.review.presentation.widgets.viewer_widget import (
+from solver_lps.features.uwb.acquisition.presentation.review.viewer_cli import (
     main as review_main,
 )
+from solver_lps.features.uwb.acquisition.data.session_assets import default_uwb_raw_path
 
 
 def parse_args(argv=None):
@@ -15,6 +16,8 @@ def parse_args(argv=None):
     parser.add_argument("--port", type=int, default=4210)
     parser.add_argument("--uwb-log", default=None)
     parser.add_argument("--capture-output", default=None)
+    parser.add_argument("--sport", default="basket")
+    parser.add_argument("--asset-set", dest="asset_set", default="set1")
     return parser.parse_args(argv)
 
 
@@ -27,6 +30,6 @@ def main(argv=None):
         return review_main(review_argv)
 
     realtime_argv = ["--ip", args.ip, "--port", str(args.port)]
-    if args.capture_output:
-        realtime_argv.extend(["--capture-output", args.capture_output])
+    capture_output = args.capture_output or default_uwb_raw_path(args.sport, args.asset_set)
+    realtime_argv.extend(["--capture-output", str(capture_output)])
     return realtime_main(realtime_argv)

@@ -1,0 +1,1 @@
+"""CV gray zone feature."""

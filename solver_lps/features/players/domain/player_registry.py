@@ -14,6 +14,7 @@ def create_player_registry(center_x, center_y):
     return {
         "center_x": center_x,
         "center_y": center_y,
+        "bounds": None,
         "selected_player_id": DEFAULT_PLAYER_ID,
         "profiles": {},
     }
@@ -22,6 +23,7 @@ def create_player_registry(center_x, center_y):
 def ensure_player_registry_defaults(registry):
     registry.setdefault("center_x", 1250.0)
     registry.setdefault("center_y", 900.0)
+    registry.setdefault("bounds", None)
     registry.setdefault("selected_player_id", DEFAULT_PLAYER_ID)
     registry.setdefault("profiles", {})
     return registry
@@ -39,7 +41,11 @@ def ensure_player_profile(registry, player_id, *, name=None, source_label="Estim
     ensure_player_registry_defaults(registry)
     profiles = registry["profiles"]
     if player_id not in profiles:
-        profiles[player_id] = create_player_analytics(registry["center_x"], registry["center_y"])
+        profiles[player_id] = create_player_analytics(
+            registry["center_x"],
+            registry["center_y"],
+            bounds=registry.get("bounds"),
+        )
         profiles[player_id]["player_id"] = player_id
     profile = profiles[player_id]
     if name is not None:
@@ -78,6 +84,7 @@ def update_registry_player(
     dt,
     name=None,
     source_label="Estimation UWB",
+    heatmap_pos_xy=None,
 ):
     profile = ensure_player_profile(
         registry,
@@ -85,17 +92,61 @@ def update_registry_player(
         name=name or _default_player_name(player_id),
         source_label=source_label,
     )
-    update_player_analytics(profile, t, pos_xy, height_cm, jump_extra_cm, dt)
+    update_player_analytics(
+        profile,
+        t,
+        pos_xy,
+        height_cm,
+        jump_extra_cm,
+        dt,
+        heatmap_pos_xy=heatmap_pos_xy,
+    )
     return profile
+
+
+def update_registry_players_from_positions(
+    registry,
+    positions,
+    *,
+    t,
+    dt,
+    source_label="Tracking CV",
+):
+    updated_profiles = []
+    for player in positions or []:
+        player_id = player.get("player_id") or player.get("stable_id")
+        if not player_id:
+            continue
+        player_x = player.get("x_cm", player.get("x", player.get("raw_x")))
+        player_y = player.get("y_cm", player.get("y", player.get("raw_y")))
+        heatmap_x = player.get("heatmap_x", player.get("x", player_x))
+        heatmap_y = player.get("heatmap_y", player.get("y", player_y))
+        if player_x is None or player_y is None:
+            continue
+        updated_profiles.append(
+            update_registry_player(
+                registry,
+                str(player_id),
+                t=t,
+                pos_xy=(player_x, player_y),
+                height_cm=None,
+                jump_extra_cm=None,
+                dt=dt,
+                name=str(player_id),
+                source_label=source_label,
+                heatmap_pos_xy=(heatmap_x, heatmap_y),
+            )
+        )
+    return updated_profiles
 
 
 def set_registry_bounds(registry, bounds):
     ensure_player_registry_defaults(registry)
-    if bounds is None:
+    registry["bounds"] = None if bounds is None else tuple(float(value) for value in bounds)
+    if registry["bounds"] is None:
         return
-    bounds_tuple = tuple(float(value) for value in bounds)
     for profile in registry["profiles"].values():
-        profile["bounds"] = bounds_tuple
+        profile["bounds"] = registry["bounds"]
 
 
 def capture_selected_player_heatmap(registry):

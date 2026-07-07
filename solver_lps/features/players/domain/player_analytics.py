@@ -1,14 +1,13 @@
-﻿from solver_lps.features.ground.domain.court_geometry import court_bounds
-
-
 HEATMAP_COLS = 112
 HEATMAP_ROWS = 60
 JUMP_COUNT_THRESHOLD_CM = 12.0
 PLAYER_SELECT_RADIUS_PX = 22
+DEFAULT_COURT_LENGTH_CM = 2800.0
+DEFAULT_COURT_WIDTH_CM = 1500.0
 
 
-def create_player_analytics(center_x, center_y):
-    left, right, top, bottom = court_bounds(center_x, center_y)
+def create_player_analytics(center_x, center_y, *, bounds=None):
+    left, right, top, bottom = _resolve_bounds(center_x, center_y, bounds=bounds)
     return {
         "name": "Joueur",
         "player_id": None,
@@ -46,7 +45,7 @@ def reset_player_analytics(analytics):
     source_label = analytics.get("source_label", "Estimation UWB")
     center_x = analytics["center_x"]
     center_y = analytics["center_y"]
-    fresh = create_player_analytics(center_x, center_y)
+    fresh = create_player_analytics(center_x, center_y, bounds=analytics.get("bounds"))
     fresh["card_visible"] = visible
     fresh["player_id"] = player_id
     fresh["name"] = name
@@ -58,13 +57,13 @@ def reset_player_analytics(analytics):
 def ensure_player_analytics_defaults(analytics):
     center_x = analytics.get("center_x", 1250.0)
     center_y = analytics.get("center_y", 900.0)
-    fresh = create_player_analytics(center_x, center_y)
+    fresh = create_player_analytics(center_x, center_y, bounds=analytics.get("bounds"))
     for key, value in fresh.items():
         analytics.setdefault(key, value)
     return analytics
 
 
-def update_player_analytics(analytics, t, pos_xy, height_cm, jump_extra_cm, dt):
+def update_player_analytics(analytics, t, pos_xy, height_cm, jump_extra_cm, dt, *, heatmap_pos_xy=None):
     ensure_player_analytics_defaults(analytics)
     if pos_xy is None:
         return
@@ -74,7 +73,8 @@ def update_player_analytics(analytics, t, pos_xy, height_cm, jump_extra_cm, dt):
     if jump_extra_cm is not None:
         analytics["max_jump_cm"] = max(analytics["max_jump_cm"], jump_extra_cm)
     analytics["recent_positions"].append((pos_xy[0], pos_xy[1], height_cm))
-    _accumulate_heat(analytics, pos_xy[0], pos_xy[1])
+    heatmap_point = heatmap_pos_xy or pos_xy
+    _accumulate_heat(analytics, heatmap_point[0], heatmap_point[1])
 
     last_pos = analytics["last_pos"]
     if last_pos is not None and dt > 0.0:
@@ -200,3 +200,15 @@ def _accumulate_heat(analytics, x_cm, y_cm):
     analytics["heatmap"][row][col] += 1
     analytics["heat_version"] += 1
 
+
+def _resolve_bounds(center_x, center_y, *, bounds=None):
+    if bounds is not None:
+        return tuple(float(value) for value in bounds)
+    half_length = DEFAULT_COURT_LENGTH_CM / 2.0
+    half_width = DEFAULT_COURT_WIDTH_CM / 2.0
+    return (
+        center_x - half_length,
+        center_x + half_length,
+        center_y - half_width,
+        center_y + half_width,
+    )

@@ -1,6 +1,11 @@
-﻿import unittest
+import unittest
 
-from solver_lps.features.ground.domain.projection import centered_screen_point, fit_bounds_to_rect, project_world_point
+from solver_lps.features.ground.domain.projection import (
+    centered_screen_point,
+    fit_bounds_to_rect,
+    project_court_cm_to_terrain_pixels,
+    project_world_point,
+)
 
 
 class _Rect:
@@ -12,6 +17,16 @@ class _Rect:
 
 
 class ProjectionTests(unittest.TestCase):
+    def test_court_cm_maps_length_to_image_y_and_width_to_image_x(self):
+        point = project_court_cm_to_terrain_pixels(
+            1250.0,
+            900.0,
+            (-150.0, 2650.0, 150.0, 1650.0),
+            (0.0, 396.0, 0.0, 735.0),
+        )
+
+        self.assertEqual((198.0, 367.5), point)
+
     def test_centered_screen_point_projects_from_center(self):
         self.assertEqual((100, 50), centered_screen_point(0, 0, 1.0, 200, 100, 0, 0))
         self.assertEqual((110, 60), centered_screen_point(0, 0, 1.0, 200, 100, 10, 10))
@@ -25,4 +40,3 @@ class ProjectionTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
-
