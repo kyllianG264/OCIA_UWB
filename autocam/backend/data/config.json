@@ -1,0 +1,57 @@
+{
+  "pose_backend": "detector_yolo_pose",
+  "detector_pose": {
+    "detector_model_name": "yolo11n.pt",
+    "pose_model_name": "yolo11n-pose.pt",
+    "detector_conf_threshold": 0.35,
+    "pose_conf_threshold": 0.5,
+    "max_frames": 300,
+    "center_crop_ratio": 1.0,
+    "min_body_height_ratio": 0.0,
+    "min_hip_velocity": 0.015,
+    "device": "auto"
+  },
+  "yolo": {
+    "model_name": "yolov8n-pose.pt",
+    "conf_threshold": 0.5,
+    "max_frames": 300,
+    "center_crop_ratio": 1.0,
+    "min_body_height_ratio": 0.0,
+    "min_hip_velocity": 0.015,
+    "device": "auto"
+  },
+  "features": {
+    "visibility_threshold": 0.4,
+    "flight_ankle_y_threshold": 0.6,
+    "min_valid_frames": 5
+  },
+  "clustering": {
+    "algorithm": "kmeans_auto",
+    "n_init": 20,
+    "max_iter": 500,
+    "random_state": 42,
+    "max_auto_clusters": 8,
+    "min_silhouette_score": 0.0,
+    "manual_distance_factor": 1.5,
+    "min_clusters": 0
+  },
+  "display": {
+    "cols_per_row": 3
+  },
+  "feature_weights": {
+    "shoulder_width_ratio": 0.0,
+    "hip_shoulder_ratio": 0.0,
+    "lateral_oscillation": 0.0,
+    "hip_height_max": 1.0,
+    "trunk_angle_mean": 1.0,
+    "trunk_angle_std": 1.0,
+    "flight_ratio": 1.0,
+    "stride_oscillation": 1.0,
+    "approach_speed_norm": 1.0,
+    "crural_index": 1.0,
+    "brachial_index": 1.0,
+    "leg_torso_ratio": 1.0,
+    "arm_torso_ratio": 1.0,
+    "leg_arm_ratio": 1.0
+  }
+}
